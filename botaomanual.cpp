@@ -1,0 +1,393 @@
+#include <FL/Fl.H>
+#include <FL/Fl_Window.H>
+#include <FL/Fl_Choice.H>
+#include <FL/Fl_Input.H>
+#include <FL/Fl_Button.H>
+#include <FL/Fl_Text_Display.H>
+#include <fstream>
+#include <vector>
+#include <sstream>
+#include <iostream>
+#include <algorithm> // Incluído para std::find
+#include <FL/Fl_Box.H>
+#include <FL/Fl_JPEG_Image.H>
+#include <map>
+#include <FL/Fl_Text_Buffer.H>
+#include <FL/fl_ask.H> // Para fl_alert
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <cstdlib>
+#endif
+
+
+std::vector<std::string> professores;
+std::vector<std::string> alunos;
+std::vector<Fl_Choice*> escolhaAlunos;
+Fl_Choice* escolhaDiaSemana;
+Fl_Text_Display* textDisplay;
+Fl_Text_Buffer* textBuffer;
+
+// Função para ler o conteúdo do arquivo .txt
+std::string lerArquivo(const std::string& nomeArquivo) {
+    std::ifstream arquivo(nomeArquivo);
+    if (!arquivo.is_open()) {
+        std::cerr << "Erro ao abrir o arquivo: " << nomeArquivo << std::endl;
+        return "";
+    }
+    std::stringstream buffer;
+    buffer << arquivo.rdbuf();
+    return buffer.str();
+}
+
+// Função para copiar o conteúdo para a área de transferência no Linux
+#ifdef __linux__
+void copiarParaClipboardLinux(const std::string& conteudo) {
+    std::string comando = "echo \"" + conteudo + "\" | xclip -selection clipboard";
+    system(comando.c_str());
+}
+#endif
+
+// Função para copiar o conteúdo para a área de transferência no Windows
+#ifdef _WIN32
+void copiarParaClipboardWindows(const std::string& conteudo) {
+    const size_t tamanho = conteudo.length() + 1;
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, tamanho);
+    memcpy(GlobalLock(hMem), conteudo.c_str(), tamanho);
+    GlobalUnlock(hMem);
+
+    OpenClipboard(0);
+    EmptyClipboard();
+    SetClipboardData(CF_TEXT, hMem);
+    CloseClipboard();
+}
+#endif
+
+// Função para copiar o conteúdo do arquivo .txt para a área de transferência
+void copiarConteudo(Fl_Widget*, void* data) {
+    Fl_Choice* choiceProfessor = (Fl_Choice*)data;
+    std::string professorSelecionado = professores[choiceProfessor->value()];
+    std::string nomeArquivo = professorSelecionado + ".txt";
+    
+    // Lê o conteúdo do arquivo
+    std::string conteudo = lerArquivo(nomeArquivo);
+
+    if (conteudo.empty()) {
+        fl_alert("Erro: Arquivo vazio ou não encontrado.");
+        return;
+    }
+
+    // Copiar o conteúdo baseado no sistema operacional
+    #ifdef _WIN32
+        copiarParaClipboardWindows(conteudo);
+    #elif __linux__
+        copiarParaClipboardLinux(conteudo);
+    #else
+        fl_alert("Sistema operacional não suportado!");
+        return;
+    #endif
+
+    fl_alert("Conteúdo copiado para a área de transferência!");
+}
+
+std::string carregarHorariosDoProfessor(const std::string& professor, const std::string& diaSelecionado) {
+    std::ifstream file(professor + ".txt");
+    std::string linha, horarios;
+    bool diaEncontrado = false;
+
+    if (!file.is_open()) {
+        std::cerr << "Não foi possível abrir o arquivo: " << professor + ".txt" << std::endl;
+        return "";
+    }
+
+    while (std::getline(file, linha)) {
+        // Verifica se a linha começa com o dia selecionado
+        if (linha.find(diaSelecionado + ":") == 0) {
+            horarios += linha + "\n";
+            diaEncontrado = true;
+        } else if (diaEncontrado) {
+            // Se já encontrou o dia selecionado e encontrou uma nova linha, termine a leitura
+            break;
+        }
+    }
+
+    return horarios;
+}
+
+void carregarProfessores() {
+    std::ifstream file("professores.txt");
+    std::string linha;
+    while (std::getline(file, linha)) {
+        std::string nome = linha.substr(0, linha.find(':'));
+        professores.push_back(nome);
+    }
+    file.close();
+}
+
+void carregarAlunos() {
+    std::ifstream file("alunos.txt");
+    std::string linha;
+    while (std::getline(file, linha)) {
+        alunos.push_back(linha);
+    }
+    file.close();
+}
+
+std::vector<std::string> carregarDiasDisponiveis(const std::string& professor) {
+    std::ifstream file(professor + ".txt");
+    std::string linha;
+    std::vector<std::string> diasDisponiveis;
+
+    if (!file.is_open()) {
+        std::cerr << "Não foi possível abrir o arquivo: " << professor + ".txt" << std::endl;
+        return diasDisponiveis;
+    }
+
+    while (std::getline(file, linha)) {
+        std::string dia = linha.substr(0, linha.find(':'));
+        if (linha.find('-') != std::string::npos) { // Verifica se existe um horário no formato "HH:MM-HH:MM"
+            if (std::find(diasDisponiveis.begin(), diasDisponiveis.end(), dia) == diasDisponiveis.end()) {
+                diasDisponiveis.push_back(dia);
+            }
+        }
+    }
+
+    return diasDisponiveis;
+}
+
+void salvarHorario(const std::string& professor, const std::string& diaSemana, const std::string& horarios, const std::vector<std::string>& alunosSelecionados) {
+    std::string nomeArquivo = professor + "_horario.txt";
+    std::ifstream file(nomeArquivo);
+    std::stringstream buffer;
+    std::string linha;
+
+    bool diaEncontrado = false;
+    bool dentroDoDia = false;
+
+    // Carrega todo o conteúdo do arquivo em memória
+    while (std::getline(file, linha)) {
+        if (linha.find("Dia: " + diaSemana) == 0) {
+            diaEncontrado = true;
+            dentroDoDia = true;
+            buffer << linha << "\n";
+            buffer << "Horários:\n";  // Cabeçalho para horários
+            // Adiciona os horários do novo cadastro
+            buffer << horarios.substr(horarios.find(':') + 1); // Remove o dia da semana dos horários
+            buffer << "Alunos:\n";
+            for (const auto& aluno : alunosSelecionados) {
+                buffer << aluno << "\n";
+            }
+            buffer << "\n"; // Adiciona uma linha em branco para separar os cadastros
+            // Pula linhas até o próximo dia ou o final do arquivo
+            // Pula as linhas relacionadas ao dia atual, mas mantém o restante do arquivo intacto
+            while (std::getline(file, linha)) {
+            if (linha.find("Dia:") == 0) {
+            // Quando encontrar o próximo dia, sai do loop de pulagem
+            buffer << linha << "\n";
+            break;
+            }
+}
+
+            dentroDoDia = false;
+        } else if (!dentroDoDia) {
+            buffer << linha << "\n"; // Mantém as linhas que não foram substituídas
+        }
+    }
+    file.close();
+
+    // Se o dia não foi encontrado, adiciona ao final
+    if (!diaEncontrado) {
+        buffer << "Dia: " << diaSemana << "\n";
+        buffer << "Horários:\n"; // Cabeçalho para horários
+        buffer << horarios.substr(horarios.find(':') + 1); // Remove o dia da semana dos horários
+        buffer << "Alunos:\n";
+        for (const auto& aluno : alunosSelecionados) {
+            buffer << aluno << "\n";
+        }
+        buffer << "\n"; // Adiciona uma linha em branco para separar os cadastros
+    }
+
+    // Reescreve o arquivo com as alterações
+    std::ofstream outFile(nomeArquivo);
+    outFile << buffer.str();
+    outFile.close();
+}
+
+void atualizarVisualizacao(const std::string& professor) {
+    // Carregar os horários do arquivo professor + "_horario.txt"
+    std::ifstream file(professor + "_horario.txt");
+    std::string linha, horarios;
+
+    if (!file.is_open()) {
+        std::cerr << "Não foi possível abrir o arquivo: " << professor + "_horario.txt" << std::endl;
+        return;
+    }
+
+    // Ler todo o conteúdo do arquivo
+    while (std::getline(file, linha)) {
+        horarios += linha + "\n";
+    }
+
+    // Exibir o conteúdo na Janela de Visualização Integrada
+    textBuffer->text(horarios.c_str());
+}
+
+void cadastrarHorarios(Fl_Widget*, void* data) {
+    Fl_Choice* choiceProfessor = (Fl_Choice*)data;
+    std::string professorSelecionado = professores[choiceProfessor->value()];
+
+    // Capturar o dia da semana selecionado
+    std::string diaSemana = escolhaDiaSemana->text();
+    
+    // Capturar os alunos selecionados
+    std::vector<std::string> alunosSelecionados;
+    for (auto& escolhaAluno : escolhaAlunos) {
+        if (escolhaAluno->value() >= 0) {
+            alunosSelecionados.push_back(alunos[escolhaAluno->value()]);
+        }
+    }
+
+    // Carregar horários do professor para o dia da semana selecionado
+    std::string horarios = carregarHorariosDoProfessor(professorSelecionado, diaSemana);
+    
+    salvarHorario(professorSelecionado, diaSemana, horarios, alunosSelecionados);
+    // Atualizar a janela de visualização após o cadastro
+    atualizarVisualizacao(professorSelecionado);
+}
+
+void selecionarProfessor(Fl_Widget*, void* data) {
+    Fl_Choice* choice = (Fl_Choice*)data;
+    std::string professorSelecionado = professores[choice->value()];
+
+    // Atualizar a lista de dias disponíveis
+    escolhaDiaSemana->clear();
+    std::vector<std::string> diasDisponiveis = carregarDiasDisponiveis(professorSelecionado);
+
+    for (const auto& dia : diasDisponiveis) {
+        escolhaDiaSemana->add(dia.c_str());
+    }
+
+    if (!diasDisponiveis.empty()) {
+        escolhaDiaSemana->value(0);  // Seleciona o primeiro dia disponível
+    }
+
+    // Atualizar a interface para permitir a seleção de alunos
+    for (auto& escolhaAluno : escolhaAlunos) {
+        escolhaAluno->clear();
+        for (const auto& aluno : alunos) {
+            escolhaAluno->add(aluno.c_str());
+        }
+    }
+
+    // Atualizar a Janela de Visualização Integrada com o conteúdo do arquivo professor_horario.txt
+    std::string diaSemana = escolhaDiaSemana->text();
+    atualizarVisualizacao(professorSelecionado);
+}
+
+void apagarArquivosHorarios(Fl_Widget*, void*) {
+    for (const auto& professor : professores) {
+        std::string nomeArquivo = professor + "_horario.txt";
+        if (std::remove(nomeArquivo.c_str()) == 0) {
+            std::cout << "Arquivo " << nomeArquivo << " removido com sucesso.\n";
+        } else {
+            std::cerr << "Falha ao remover o arquivo " << nomeArquivo << ".\n";
+        }
+    }
+    // Limpar a visualização após apagar arquivos
+    textBuffer->text("");
+}
+
+void botaoOrdenarHorarios(Fl_Widget*, void* data) {
+    Fl_Choice* choiceProfessor = (Fl_Choice*)data;
+    if (!choiceProfessor) {
+        std::cerr << "Ponteiro para professor é nulo!" << std::endl;
+        return;
+    }
+
+    std::string professorSelecionado = professores[choiceProfessor->value()];
+
+    int ret = system("g++ botaoorganizar.cpp -o botaoorganizar -lfltk -lfltk_images");
+    if (ret != 0) {
+        std::cerr << "Erro na compilação!" << std::endl;
+        return;
+    }
+
+    ret = system("./botaoorganizar");
+    if (ret != 0) {
+        std::cerr << "Erro na execução!" << std::endl;
+        return;
+    }
+
+    atualizarVisualizacao(professorSelecionado);
+}
+
+
+
+int main() {
+    carregarProfessores();
+    carregarAlunos();
+
+    Fl_Window* window = new Fl_Window(700, 550, "Cadastro de Horários");
+
+    Fl_JPEG_Image* background_image = new Fl_JPEG_Image("pngs/listraazul.JPEG");
+
+    
+
+    // Verifica se a imagem foi carregada corretamente
+    if (!background_image->data()) {
+        std::cerr << "Não foi possível carregar a imagem de fundo." << std::endl;
+        return 1;
+    }
+
+    // Cria um widget Fl_Box para exibir a imagem de fundo
+    Fl_Box* background_box = new Fl_Box(0, 0, window->w(), window->h());
+    background_box->image(background_image); // Define a imagem de fundo
+    background_box->box(FL_FLAT_BOX); // Define um estilo de caixa sem borda
+
+    Fl_Choice* choiceProfessor = new Fl_Choice(170, 50, 160, 30, "Selecionar Professor:");
+    for (const auto& professor : professores) {
+        choiceProfessor->add(professor.c_str());
+    }
+    choiceProfessor->callback(selecionarProfessor, choiceProfessor);
+
+// Adicionar escolha de dia da semana
+    escolhaDiaSemana = new Fl_Choice(170, 100, 160, 30, "Dia da Semana:");
+    escolhaDiaSemana->add("Segunda");
+    escolhaDiaSemana->add("Terça");
+    escolhaDiaSemana->add("Quarta");
+    escolhaDiaSemana->add("Quinta");
+    escolhaDiaSemana->add("Sexta");
+    escolhaDiaSemana->add("Sábado");
+    escolhaDiaSemana->add("Domingo");
+
+    for (int i = 0; i < 6; ++i) {
+    Fl_Choice* escolhaAluno = new Fl_Choice(170, 150 + (i * 40), 160, 30, "Selecionar Aluno:");
+    escolhaAlunos.push_back(escolhaAluno);
+}
+
+// Botão para cadastrar horarios
+    Fl_Button* botao = new Fl_Button(170, 400, 160, 30, "Cadastrar Horários");
+    botao->callback(cadastrarHorarios, choiceProfessor);
+
+// Botão para apagar os arquivos de horários
+    Fl_Button* botaoApagar = new Fl_Button(170, 450, 160, 30, "Apagar Horários");
+    botaoApagar->callback(apagarArquivosHorarios);
+
+// Botão para organizar os horários
+    Fl_Button* botaoOrdenar = new Fl_Button(170, 500, 160, 30, "Ordenar Horários");
+    botaoOrdenar->callback(botaoOrdenarHorarios, choiceProfessor);
+
+    Fl_Button* botaoCopiar = new Fl_Button(500, 400, 160, 30, "Copiar");
+    botaoCopiar->callback(copiarConteudo, choiceProfessor);
+
+
+// Adicionar Janela de Visualização Integrada
+    textBuffer = new Fl_Text_Buffer();
+    textDisplay = new Fl_Text_Display(340, 50, 330, 330, "Horários do Professor:");
+    textDisplay->buffer(textBuffer);
+
+    window->end();
+    window->show();
+
+    return Fl::run();
+}
